@@ -8,7 +8,7 @@
 
 #include "sio_client_impl.h"
 #include <sstream>
-#include <boost/date_time/posix_time/posix_time.hpp>
+//#include <boost/date_time/posix_time/posix_time.hpp>
 #include <mutex>
 #include <cmath>
 // Comment this out to disable handshake logging to stdout
@@ -18,7 +18,7 @@
 #define LOG(x)
 #endif
 
-using boost::posix_time::milliseconds;
+//using boost::posix_time::milliseconds;
 using namespace std;
 
 namespace sio
@@ -173,7 +173,7 @@ namespace sio
         }
     }
 
-    boost::asio::io_service& client_impl::get_io_service()
+    lib::asio::io_service& client_impl::get_io_service()
     {
         return m_client.get_io_service();
     }
@@ -274,12 +274,12 @@ namespace sio
         }
     }
 
-    void client_impl::ping(const boost::system::error_code& ec)
+    void client_impl::ping(const lib::error_code& ec)
     {
         if(ec || m_con.expired())
         {
-            if (ec != boost::asio::error::operation_aborted)
-                LOG("ping exit,con is expired?"<<m_con.expired()<<",ec:"<<ec.message()<<endl){};
+            if (ec != lib::asio::error::operation_aborted)
+                LOG("ping exit,con is expired?"<<m_con.expired()<<",ec:"<<ec.message()<<endl);
             return;
         }
         packet p(packet::frame_ping);
@@ -290,20 +290,20 @@ namespace sio
         });
         if(m_ping_timer)
         {
-            boost::system::error_code e_code;
-            m_ping_timer->expires_from_now(milliseconds(m_ping_interval), e_code);
+            lib::error_code e_code;
+            m_ping_timer->expires_from_now(std::chrono::milliseconds(m_ping_interval), e_code);
             m_ping_timer->async_wait(lib::bind(&client_impl::ping,this,lib::placeholders::_1));
         }
         if(!m_ping_timeout_timer)
         {
-            m_ping_timeout_timer.reset(new boost::asio::deadline_timer(m_client.get_io_service()));
-            boost::system::error_code timeout_ec;
-            m_ping_timeout_timer->expires_from_now(milliseconds(m_ping_timeout), timeout_ec);
+            m_ping_timeout_timer.reset(new asio::steady_timer(m_client.get_io_service()));
+            lib::error_code timeout_ec;
+            m_ping_timeout_timer->expires_from_now(std::chrono::milliseconds(m_ping_timeout), timeout_ec);
             m_ping_timeout_timer->async_wait(lib::bind(&client_impl::timeout_pong, this,lib::placeholders::_1));
         }
     }
 
-    void client_impl::timeout_pong(const boost::system::error_code &ec)
+    void client_impl::timeout_pong(const lib::error_code &ec)
     {
         if(ec)
         {
@@ -313,7 +313,7 @@ namespace sio
         m_client.get_io_service().dispatch(lib::bind(&client_impl::close_impl, this,close::status::policy_violation,"Pong timeout"));
     }
 
-    void client_impl::timeout_reconnect(boost::system::error_code const& ec)
+    void client_impl::timeout_reconnect(lib::error_code const& ec)
     {
         if(ec)
         {
@@ -374,9 +374,9 @@ namespace sio
             LOG("Reconnect for attempt:"<<m_reconn_made<<endl);
             unsigned delay = this->next_delay();
             if(m_reconnect_listener) m_reconnect_listener(m_reconn_made,delay);
-            m_reconn_timer.reset(new boost::asio::deadline_timer(m_client.get_io_service()));
-            boost::system::error_code ec;
-            m_reconn_timer->expires_from_now(milliseconds(delay), ec);
+            m_reconn_timer.reset(new asio::steady_timer(m_client.get_io_service()));
+            lib::error_code ec;
+            m_reconn_timer->expires_from_now(std::chrono::milliseconds(delay), ec);
             m_reconn_timer->async_wait(lib::bind(&client_impl::timeout_reconnect,this,lib::placeholders::_1));
         }
         else
@@ -432,9 +432,9 @@ namespace sio
                 LOG("Reconnect for attempt:"<<m_reconn_made<<endl);
                 unsigned delay = this->next_delay();
                 if(m_reconnect_listener) m_reconnect_listener(m_reconn_made,delay);
-                m_reconn_timer.reset(new boost::asio::deadline_timer(m_client.get_io_service()));
-                boost::system::error_code ec;
-                m_reconn_timer->expires_from_now(milliseconds(delay), ec);
+                m_reconn_timer.reset(new asio::steady_timer(m_client.get_io_service()));
+                lib::error_code ec;
+                m_reconn_timer->expires_from_now(std::chrono::milliseconds(delay), ec);
                 m_reconn_timer->async_wait(lib::bind(&client_impl::timeout_reconnect,this,lib::placeholders::_1));
                 return;
             }
@@ -450,8 +450,8 @@ namespace sio
     void client_impl::on_message(connection_hdl, client_type::message_ptr msg)
     {
         if (m_ping_timeout_timer) {
-            boost::system::error_code ec;
-            m_ping_timeout_timer->expires_from_now(milliseconds(m_ping_timeout),ec);
+            lib::error_code ec;
+            m_ping_timeout_timer->expires_from_now(std::chrono::milliseconds(m_ping_timeout),ec);
             m_ping_timeout_timer->async_wait(lib::bind(&client_impl::timeout_pong, this,lib::placeholders::_1));
         }
         // Parse the incoming message according to socket.IO rules
@@ -490,10 +490,10 @@ namespace sio
                 m_ping_timeout = 60000;
             }
 
-            m_ping_timer.reset(new boost::asio::deadline_timer(m_client.get_io_service()));
-            boost::system::error_code ec;
-            m_ping_timer->expires_from_now(milliseconds(m_ping_interval), ec);
-            if(ec)LOG("ec:"<<ec.message()<<endl){};
+            m_ping_timer.reset(new asio::steady_timer(m_client.get_io_service()));
+            lib::error_code ec;
+            m_ping_timer->expires_from_now(std::chrono::milliseconds(m_ping_interval), ec);
+            if(ec)LOG("ec:"<<ec.message()<<endl);
             m_ping_timer->async_wait(lib::bind(&client_impl::ping,this,lib::placeholders::_1));
             LOG("On handshake,sid:"<<m_sid<<",ping interval:"<<m_ping_interval<<",ping timeout"<<m_ping_timeout<<endl);
             return;
@@ -547,7 +547,7 @@ failed:
     void client_impl::clear_timers()
     {
         LOG("clear timers"<<endl);
-        boost::system::error_code ec;
+        lib::error_code ec;
         if(m_ping_timeout_timer)
         {
             m_ping_timeout_timer->cancel(ec);
@@ -571,7 +571,7 @@ failed:
     client_impl::context_ptr client_impl::on_tls_init(connection_hdl conn)
     {
         context_ptr ctx = context_ptr(new  boost::asio::ssl::context(boost::asio::ssl::context::tlsv1));
-        boost::system::error_code ec;
+        lib::error_code ec;
         ctx->set_options(boost::asio::ssl::context::default_workarounds |
                              boost::asio::ssl::context::no_sslv2 |
                              boost::asio::ssl::context::single_dh_use,ec);

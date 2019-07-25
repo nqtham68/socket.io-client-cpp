@@ -30,7 +30,7 @@ typedef websocketpp::config::asio_tls_client client_config;
 typedef websocketpp::config::asio_client client_config;
 #endif //SIO_TLS
 #endif //DEBUG
-#include <boost/asio/deadline_timer.hpp>
+//#include <boost/asio/deadline_timer.hpp>
 
 #include <memory>
 #include <map>
@@ -122,7 +122,7 @@ namespace sio
         
         void remove_socket(std::string const& nsp);
         
-        boost::asio::io_service& get_io_service();
+        lib::asio::io_service& get_io_service();
         
         void on_socket_closed(std::string const& nsp);
         
@@ -137,11 +137,11 @@ namespace sio
         
         void send_impl(std::shared_ptr<const std::string> const&  payload_ptr,frame::opcode::value opcode);
         
-        void ping(const boost::system::error_code& ec);
+        void ping(const lib::error_code& ec);
         
-        void timeout_pong(const boost::system::error_code& ec);
+        void timeout_pong(const lib::error_code& ec);
 
-        void timeout_reconnect(boost::system::error_code const& ec);
+        void timeout_reconnect(lib::error_code const& ec);
 
         unsigned next_delay() const;
 
@@ -195,11 +195,11 @@ namespace sio
         
         packet_manager m_packet_mgr;
         
-        std::unique_ptr<boost::asio::deadline_timer> m_ping_timer;
+        std::unique_ptr<asio::steady_timer> m_ping_timer;
         
-        std::unique_ptr<boost::asio::deadline_timer> m_ping_timeout_timer;
+        std::unique_ptr<asio::steady_timer> m_ping_timeout_timer;
 
-        std::unique_ptr<boost::asio::deadline_timer> m_reconn_timer;
+        std::unique_ptr<asio::steady_timer> m_reconn_timer;
         
         con_state m_con_state;
         
