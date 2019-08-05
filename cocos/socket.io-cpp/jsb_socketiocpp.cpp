@@ -15,37 +15,16 @@ using namespace sio;
 se::Class* __jsb_SocketIOCPP_class = nullptr;
 
 class JSB_SocketIODelegate;
-
-class SocketIO {
-public:
-	SocketIO() {
-		CCLOG("SocketIO constructor");
-	}
-};
-
-// wrapper over sio:client
-class SIOClient : public sio::client, public Ref {
-
-public:
-	SIOClient(JSB_SocketIODelegate& delegate) : _delegate(&delegate) {
-	}
-
-public:
-	JSB_SocketIODelegate* getDelegate() { return _delegate; }
-private:
-	JSB_SocketIODelegate* _delegate = nullptr;
-};
+class SIOClient;
 
 
 class JSB_SocketIODelegate : public Ref
 {
 public:
 	//c++11 map to callbacks
-	typedef std::unordered_map<std::string/* eventName */, se::ValueArray/* 0:callbackFunc, 1:target */> JSB_SIOCallbackRegistry;
+	typedef std::unordered_map<std::string/* eventName */, se::ValueArray/* 0:callbackFunc, 1:target */> JSB_SIOCallbackRegistry;	
 
-	SIOClient* client;
-
-	JSB_SocketIODelegate() {
+	JSB_SocketIODelegate(SIOClient* client): _client(client) {
 	}
 
 	virtual ~JSB_SocketIODelegate()
@@ -55,6 +34,7 @@ public:
 
 	void onOpen() {
 		CCLOG("Socket open");
+		fireEventToScript("connect", sio::null_message::create());
 	}
 
 	void onFail() {
@@ -72,7 +52,7 @@ public:
 			fireEventToScript("disconnect", "close_reason_drop");
 		}
 
-		auto iter = se::NativePtrToObjectMap::find(client);
+		auto iter = se::NativePtrToObjectMap::find(_client);
 		if (iter != se::NativePtrToObjectMap::end())
 		{
 			iter->second->unroot();
@@ -93,7 +73,7 @@ public:
 		CCLOG("JSB SocketIO::SIODelegate->onError method called from native with ");
 		this->fireEventToScript("error", data);
 
-		auto iter = se::NativePtrToObjectMap::find(client);
+		auto iter = se::NativePtrToObjectMap::find(_client);
 		if (iter != se::NativePtrToObjectMap::end())
 		{
 			iter->second->unroot();
@@ -106,27 +86,9 @@ public:
 		fireEventToScript(name, event.get_message());
 	}
 
-	void fireEventToScript(const std::string& eventName, std::string data) {
-		fireEventToScript(eventName, sio::string_message::create(data));
-	}
-
-	void fireEventToScript(const std::string& eventName, sio::message::ptr const& data)
-	{
-		// script engine need to run on main thread
-		cocos2d::Application::getInstance()->getScheduler()->performFunctionInCocosThread([eventName, data, this] {
-			CCLOG("JSB SocketIO::SIODelegate->fireEventToScript method called from native with name '%s'", eventName.c_str());
-
-			se::ScriptEngine::getInstance()->clearException();
-			se::AutoHandleScope hs;
-
-			if (cocos2d::Application::getInstance() == nullptr)
-				return;
-
-			auto iter = se::NativePtrToObjectMap::find(client); //IDEA: client probably be a new value with the same address as the old one, it may cause undefined result.
-			if (iter == se::NativePtrToObjectMap::end())
-				return;
-
-			se::Value dataVal;
+	se::Value ioData2seValue(sio::message::ptr const data) {
+		se::Value dataVal;
+		if (data != nullptr) {
 			switch (data->get_flag())
 			{
 			case sio::message::flag_null:
@@ -150,6 +112,34 @@ public:
 				dataVal.setNull();
 				break;
 			}
+		}
+		else {
+			dataVal.setNull();
+		}
+		return dataVal;
+	}
+
+	void fireEventToScript(const std::string& eventName, std::string data) {
+		fireEventToScript(eventName, sio::string_message::create(data));
+	}
+
+	void fireEventToScript(const std::string& eventName, sio::message::ptr const& data)
+	{
+		// script engine need to run on main thread
+		cocos2d::Application::getInstance()->getScheduler()->performFunctionInCocosThread([eventName, data, this] {
+			CCLOG("JSB SocketIO::SIODelegate->fireEventToScript method called from native with name '%s'", eventName.c_str());
+
+			se::ScriptEngine::getInstance()->clearException();
+			se::AutoHandleScope hs;
+
+			if (cocos2d::Application::getInstance() == nullptr)
+				return;
+
+			auto iter = se::NativePtrToObjectMap::find(_client); //IDEA: client probably be a new value with the same address as the old one, it may cause undefined result.
+			if (iter == se::NativePtrToObjectMap::end())
+				return;
+
+			se::Value dataVal = ioData2seValue(data);
 
 			JSB_SIOCallbackRegistry::iterator it = _eventRegistry.find(eventName);
 
@@ -181,6 +171,40 @@ public:
 
 private:
 	JSB_SIOCallbackRegistry _eventRegistry;
+	SIOClient* _client;
+};
+
+// wrapper class use for cocos
+class SIOClient : public Ref {
+
+public:
+	SIOClient() {
+		_client = new sio::client();
+		_delegate = new JSB_SocketIODelegate(this);
+		_delegate->retain();
+
+		_client->set_reconnect_attempts(0);
+		_client->set_open_listener(std::bind(&JSB_SocketIODelegate::onOpen, _delegate));
+		_client->set_close_listener(std::bind(&JSB_SocketIODelegate::onClose, _delegate, std::placeholders::_1));
+		_client->set_fail_listener(std::bind(&JSB_SocketIODelegate::onFail, _delegate));
+		_client->socket()->on_error(std::bind(&JSB_SocketIODelegate::onError, _delegate, std::placeholders::_1));
+	}
+
+	virtual ~SIOClient() {
+		_client->sync_close();
+		_client->clear_con_listeners();
+		_delegate->release();
+		delete _client;
+	}
+
+public:
+	JSB_SocketIODelegate* delegate() { return _delegate; }
+	sio::client* client() { return _client; }
+
+private:
+	JSB_SocketIODelegate* _delegate = nullptr;
+	sio::client* _client = nullptr;
+
 };
 
 
@@ -188,9 +212,7 @@ static bool SocketIO_finalize(se::State& s)
 {
 	SIOClient* cobj = (SIOClient*)s.nativeThisObject();
 	CCLOGINFO("jsbindings: finalizing JS object %p (SocketIO)", cobj);
-	cobj->sync_close();
-	cobj->clear_con_listeners();
-	JSB_SocketIODelegate* delegate = static_cast<JSB_SocketIODelegate*>(cobj->getDelegate());
+	JSB_SocketIODelegate* delegate = cobj->delegate();
 	if (delegate->getReferenceCount() == 1)
 	{
 		delegate->autorelease();
@@ -204,50 +226,11 @@ static bool SocketIO_finalize(se::State& s)
 }
 SE_BIND_FINALIZE_FUNC(SocketIO_finalize)
 
-
-//static bool SocketIO_prop_getTag(se::State& s)
-//{
-//	SIOClient* cobj = (SIOClient*)s.nativeThisObject();
-//	s.rval().setString(cobj->getTag());
-//	return true;
-//}
-//SE_BIND_PROP_GET(SocketIO_prop_getTag)
-
-//static bool SocketIO_prop_setTag(se::State& s)
-//{
-//	SIOClient* cobj = (SIOClient*)s.nativeThisObject();
-//	cobj->setTag(s.args()[0].toString().c_str());
-//	return true;
-//}
-//SE_BIND_PROP_SET(SocketIO_prop_setTag)
-
-//static bool SocketIO_send(se::State& s)
-//{
-//	const auto& args = s.args();
-//	int argc = (int)args.size();
-//	SIOClient* cobj = (SIOClient*)s.nativeThisObject();
-//
-//	if (argc == 1)
-//	{
-//		std::string payload;
-//		bool ok = seval_to_std_string(args[0], &payload);
-//		SE_PRECONDITION2(ok, false, "Converting payload failed!");
-//
-//		cobj->send(payload);
-//		return true;
-//	}
-//
-//	SE_REPORT_ERROR("Not support send function. Use emit('message', ...) instead");
-//	return false;
-//}
-//SE_BIND_FUNC(SocketIO_send)
-
 static bool SocketIO_emit(se::State& s)
 {
 	const auto& args = s.args();
 	int argc = (int)args.size();
 	SIOClient* cobj = (SIOClient*)s.nativeThisObject();
-	sio::socket::ptr socket = cobj->socket();
 
 	if (argc >= 1)
 	{
@@ -257,7 +240,7 @@ static bool SocketIO_emit(se::State& s)
 		SE_PRECONDITION2(ok, false, "Converting eventName failed!");
 
 		sio::message::list payload;
-		std::function<void(sio::message::list const&)> ack = nullptr;
+		se::Object* ackFunc = nullptr;
 		if (argc >= 2)
 		{
 			for (int i = 1; i < argc; i++) {
@@ -283,13 +266,61 @@ static bool SocketIO_emit(se::State& s)
 					SE_PRECONDITION2(ok, false, "Converting payload failed!");
 					payload.push(sio::string_message::create(s));
 				}
+				else if (arg.isObject()) {
+					se::Object* dataObj = arg.toObject();
+					uint8_t* ptr = nullptr;
+					size_t length = 0;
+					if (dataObj->isArrayBuffer())
+					{
+						ok = dataObj->getArrayBufferData(&ptr, &length);
+						SE_PRECONDITION2(ok, false, "getArrayBufferData failed!");
+						payload.push(sio::binary_message::create(std::shared_ptr<const std::string>(new std::string((char*)ptr, length))));
+					}
+					else if (dataObj->isTypedArray())
+					{
+						ok = dataObj->getTypedArrayData(&ptr, &length);
+						SE_PRECONDITION2(ok, false, "getTypedArrayData failed!");
+						payload.push(sio::binary_message::create(std::shared_ptr<const std::string>(new std::string((char*)ptr, length))));
+					}
+					else if (dataObj->isFunction()) {		// ack callback
+						if (i == argc - 1) {
+							ackFunc = dataObj;
+						}
+						else {
+							SE_REPORT_ERROR("ACK function should end of param list");
+						}
+					}
+					
+				}
 				else {
 					SE_REPORT_ERROR("Not support arg value type");
 				}
 			}
 		}
 
-		socket->emit(eventName, payload);
+
+		std::function<void(sio::message::list const&)> ack = nullptr;
+		if (ackFunc != nullptr) {
+			auto target = se::Value(s.thisObject());
+			auto callback = se::Value(ackFunc);
+			ack = [target, cobj, callback](sio::message::list const& msgs) {
+				cocos2d::Application::getInstance()->getScheduler()->performFunctionInCocosThread([target, cobj, callback, msgs] {
+					se::ScriptEngine::getInstance()->clearException();
+					se::AutoHandleScope hs;
+
+					if (cocos2d::Application::getInstance() == nullptr)
+						return;
+
+					se::ValueArray args;
+					for (int i = 0; i < msgs.size(); i++) {
+						args.push_back(cobj->delegate()->ioData2seValue(msgs[i]));
+					}
+					callback.toObject()->call(args, target.toObject());
+				});				
+			};
+		}
+
+		cobj->client()->socket()->emit(eventName, payload, ack);
 		return true;
 	}
 
@@ -300,18 +331,11 @@ SE_BIND_FUNC(SocketIO_emit)
 
 static bool SocketIO_disconnect(se::State& s)
 {
-	const auto& args = s.args();
-	int argc = (int)args.size();
 	SIOClient* cobj = (SIOClient*)s.nativeThisObject();
 
-	if (argc == 0)
-	{
-		cobj->sync_close();
-		return true;
-	}
+	cobj->client()->sync_close();
+	return true;
 
-	SE_REPORT_ERROR("Wrong number of arguments: %d, expected: %d", argc, 0);
-	return false;
 }
 SE_BIND_FUNC(SocketIO_disconnect)
 
@@ -328,11 +352,10 @@ static bool SocketIO_on(se::State& s)
 		ok = seval_to_std_string(args[0], &eventName);
 		SE_PRECONDITION2(ok, false, "Converting eventName failed!");
 
-		CCLOG("JSB SocketIO eventName to: '%s'", eventName.c_str());
+		CCLOG("JSB SocketIO register eventName to: '%s'", eventName.c_str());
 
-		auto delegate = (JSB_SocketIODelegate *)cobj->getDelegate();
-		delegate->addEvent(eventName, args[1], se::Value(s.thisObject()));
-		cobj->socket()->on(eventName, sio::socket::event_listener(std::bind(&JSB_SocketIODelegate::onEvent, delegate, std::placeholders::_1)));
+		cobj->delegate()->addEvent(eventName, args[1], se::Value(s.thisObject()));
+		cobj->client()->socket()->on(eventName, sio::socket::event_listener(std::bind(&JSB_SocketIODelegate::onEvent, cobj->delegate(), std::placeholders::_1)));
 		return true;
 	}
 
@@ -359,6 +382,7 @@ static bool SocketIO_connect(se::State& s)
 
 		ok = seval_to_std_string(args[0], &url);
 		SE_PRECONDITION2(ok, false, "Error processing arguments");
+		CCLOG("SocketIO connect to [%s]", url.c_str());
 
 		if (argc == 2)
 		{
@@ -382,70 +406,41 @@ static bool SocketIO_connect(se::State& s)
 			}
 		}
 
-		JSB_SocketIODelegate* siodelegate = new (std::nothrow) JSB_SocketIODelegate();
-
 		CCLOG("Calling native SocketIO.connect method");
-		SIOClient* ret = new SIOClient(*siodelegate);
-		if (ret != nullptr)
-		{
-			ret->set_reconnect_attempts(3);
-			ret->set_open_listener(std::bind(&JSB_SocketIODelegate::onOpen, siodelegate));
-			ret->set_close_listener(std::bind(&JSB_SocketIODelegate::onClose, siodelegate, std::placeholders::_1));
-			ret->set_fail_listener(std::bind(&JSB_SocketIODelegate::onFail, siodelegate));
-			ret->connect(url, query);
-			ret->socket()->on_error(std::bind(&JSB_SocketIODelegate::onError, siodelegate, std::placeholders::_1));
+		SIOClient* sioc = new SIOClient();
+		sioc->client()->connect(url, query);
+		sioc->retain();
 
-			ret->retain();
-			siodelegate->retain();
-			siodelegate->client = ret;
+		se::Object* obj = se::Object::createObjectWithClass(__jsb_SocketIOCPP_class);
+		obj->setPrivateData(sioc);
 
-			se::Object* obj = se::Object::createObjectWithClass(__jsb_SocketIOCPP_class);
-			obj->setPrivateData(ret);
+		s.rval().setObject(obj);
+		obj->root();
 
-			s.rval().setObject(obj);
-			obj->root();
-
-			return true;
-		}
-		else
-		{
-			siodelegate->release();
-			SE_REPORT_ERROR("SocketIO.connect return nullptr!");
-			return false;
-		}
+		return true;
 	}
 	SE_REPORT_ERROR("JSB SocketIO.connect: Wrong number of arguments");
 	return false;
 }
 SE_BIND_FUNC(SocketIO_connect)
 
-// static
-//static bool SocketIO_close(se::State& s)
-//{
-//	return SocketIO_disconnect(s);
-//}
-//SE_BIND_FUNC(SocketIO_close)
 
-bool register_all_socketiocpp(se::Object* obj)
+bool register_all_socketiocpp(se::Object* global)
 {
-	se::Class* cls = se::Class::create("SocketIO", obj, nullptr, nullptr);
+	se::Class* cls = se::Class::create("SocketIO", global, nullptr, nullptr);
 	cls->defineFinalizeFunction(_SE(SocketIO_finalize));
 
-	//cls->defineProperty("tag", _SE(SocketIO_prop_getTag), _SE(SocketIO_prop_setTag));
-
-	//cls->defineFunction("send", _SE(SocketIO_send));
 	cls->defineFunction("emit", _SE(SocketIO_emit));
 	cls->defineFunction("disconnect", _SE(SocketIO_disconnect));
 	cls->defineFunction("on", _SE(SocketIO_on));
 
 	cls->install();
 
-	JSBClassType::registerClass<SocketIO>(cls);
+	//JSBClassType::registerClass<SIOClient>(cls);
 
 	se::Value ctorVal;
-	obj->getProperty("SocketIO", &ctorVal);
+	global->getProperty("SocketIO", &ctorVal);
 	ctorVal.toObject()->defineFunction("connect", _SE(SocketIO_connect));
-	//ctorVal.toObject()->defineFunction("close", _SE(SocketIO_close));
 
 	__jsb_SocketIOCPP_class = cls;
 

@@ -561,7 +561,6 @@ namespace sio
             return arr;
         }
 
-    private:
         std::vector<message::ptr> m_vector;
     };
 }
